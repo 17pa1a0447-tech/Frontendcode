@@ -94,6 +94,7 @@ pipeline {
   } // stages
 
   post {
+    
     success { echo "Frontend pipeline finished successfully." }
     failure { echo "Frontend pipeline failed — check console log." }
   }
