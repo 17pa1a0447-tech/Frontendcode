@@ -1,75 +1,81 @@
 pipeline {
     agent any
-    parameters {
-        string(name: 'API_URL', defaultValue: 'http://localhost:9090/api/v1', description: 'API URL for production')
+
+    environment {
+        DOCKER_IMAGE = "jsandeep9866/frontend-app"
+        APP_DIR = "crud-application"
+        CONTAINER_NAME = "frontend-container"
     }
+
+    parameters {
+        string(name: 'API_URL', defaultValue: 'http://localhost:9090/api/v1', description: 'Backend API URL')
+    }
+
     stages {
-        stage('Checkout') {
+
+        stage('Clone Repo') {
             steps {
-                echo 'Cloning repository...'
-                deleteDir() 
-                git url: 'https://github.com/17pa1a0447-tech/Frontendcode.git', branch: 'main'
+                deleteDir()
+                git branch: 'main', url: 'https://github.com/17pa1a0447-tech/Frontendcode.git'
             }
         }
+
         stage('Replace API URL') {
             steps {
-                echo "Replacing API URL in environment.prod.ts"
                 sh """
-                    sed -i 's#__API_URL__#${params.API_URL}#g' crud-application/src/environments/environment.prod.ts
+                    sed -i 's#__API_URL__#${params.API_URL}#g' ${APP_DIR}/src/environments/environment.prod.ts
                 """
             }
         }
+
         stage('Build Angular App') {
-            agent { docker { image 'node:18' args '-u root:root' } }   // runs stage inside node:18 container
             steps {
-                dir('crud-application') {
-                sh 'npm ci'
-                sh 'npm run build -- --configuration=production'
+                dir("${APP_DIR}") {
+                    sh 'npm install'
+                    sh 'npm run build -- --configuration=production'
                 }
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                echo 'Building Docker image...'
-                dir('crud-application') {
-                    script {
-                        def imageName = "jsandeep9866/frontend-app"
-                        sh "docker build -t ${imageName}:latest -t ${imageName}:${env.BUILD_NUMBER} ."
-                    }
+                dir("${APP_DIR}") {
+                    sh "docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} -t ${DOCKER_IMAGE}:latest ."
                 }
             }
         }
-        stage('Push Docker Image') {
+
+        stage('Docker Login & Push') {
             steps {
-                echo 'Pushing Docker image to DockerHub...'
-                script {
-                    def imageName = "jsandeep9866/frontend-app"
-                    withCredentials([usernamePassword(credentialsId: 'jsandeep9866', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                        sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
-                        sh "docker push ${imageName}:latest"
-                        sh "docker push ${imageName}:${env.BUILD_NUMBER}"
-                        sh 'docker logout'
-                    }
+                withCredentials([usernamePassword(credentialsId: 'jsandeep9866',
+                        usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+
+                    sh '''
+                        echo "$PASS" | docker login -u "$USER" --password-stdin
+                        docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+                        docker push ${DOCKER_IMAGE}:latest
+                        docker logout
+                    '''
                 }
             }
         }
+
         stage('Deploy Container') {
             steps {
-                echo 'Deploying container...'
-                script {
-                    sh 'docker rm -f frontend-container || true'
-                    sh "docker run -d -p 3025:80 --name frontend-container jsandeep9866/frontend-app:latest"
-                }
+                sh '''
+                    docker rm -f frontend-container || true
+                    docker run -d -p 3025:80 --name frontend-container jsandeep9866/frontend-app:latest
+                '''
             }
         }
     }
+
     post {
         success {
-            echo 'Pipeline completed successfully!'
+            echo "Frontend deployed successfully!"
         }
         failure {
-            echo 'Pipeline failed!'
+            echo "Frontend pipeline failed!"
         }
     }
 }
