@@ -1,74 +1,100 @@
 pipeline {
-    agent any
-    parameters {
-        string(name: 'API_URL', defaultValue: 'http://localhost:9090/api/v1', description: 'API URL for production')
+  agent any
+
+  environment {
+    DOCKER_IMAGE = "jsandeep9866/frontend-app"
+    APP_DIR = "crud-application"
+    CONTAINER_NAME = "frontend-container"
+    DOCKERHUB_CREDENTIALS = "jsandeep9866" // Jenkins credential id for DockerHub (username/password)
+  }
+
+  parameters {
+    string(name: 'API_URL', defaultValue: 'http://localhost:9090/api/v1', description: 'Backend API URL to inject')
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        deleteDir()
+        git branch: 'main', url: 'https://github.com/17pa1a0447-tech/Frontendcode.git'
+      }
     }
-    stages {
-        stage('Checkout') {
-            steps {
-                echo 'Cloning repository...'
-                deleteDir() 
-                git url: 'https://github.com/17pa1a0447-tech/Frontendcode.git', branch: 'main'
-            }
-        }
-        stage('Replace API URL') {
-            steps {
-                echo "Replacing API URL in environment.prod.ts"
-                sh """
-                    sed -i 's#__API_URL__#${params.API_URL}#g' crud-application/src/environments/environment.prod.ts
-                """
-            }
-        }
-        stage('Build Angular App') {
-            steps {
-                echo 'Building Angular application...'
-                dir('crud-application') {
-                    sh 'npm ci'
-                    sh 'npm run build -- --configuration=production'
-                }
-            }
-        }
-        stage('Build Docker Image') {
-            steps {
-                echo 'Building Docker image...'
-                dir('crud-application') {
-                    script {
-                        def imageName = "jsandeep9866/frontend-app"
-                        sh "docker build -t ${imageName}:latest -t ${imageName}:${env.BUILD_NUMBER} ."
-                    }
-                }
-            }
-        }
-        stage('Push Docker Image') {
-            steps {
-                echo 'Pushing Docker image to DockerHub...'
-                script {
-                    def imageName = "jsandeep9866/frontend-app"
-                    withCredentials([usernamePassword(credentialsId: 'jsandeep9866', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                        sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
-                        sh "docker push ${imageName}:latest"
-                        sh "docker push ${imageName}:${env.BUILD_NUMBER}"
-                        sh 'docker logout'
-                    }
-                }
-            }
-        }
-        stage('Deploy Container') {
-            steps {
-                echo 'Deploying container...'
-                script {
-                    sh 'docker rm -f frontend-container || true'
-                    sh "docker run -d -p 3025:80 --name frontend-container jsandeep9866/frontend-app:latest"
-                }
-            }
-        }
+
+    stage('Replace API URL') {
+      steps {
+        sh """
+          if [ -f ${APP_DIR}/src/environments/environment.prod.ts ]; then
+            sed -i 's#__API_URL__#${params.API_URL}#g' ${APP_DIR}/src/environments/environment.prod.ts
+            echo "Replaced API_URL in ${APP_DIR}/src/environments/environment.prod.ts"
+          else
+            echo "ERROR: ${APP_DIR}/src/environments/environment.prod.ts not found"
+            exit 1
+          fi
+        """
+      }
     }
-    post {
-        success {
-            echo 'Pipeline completed successfully!'
+
+    stage('Build Angular (containerized)') {
+      steps {
+        dir("${APP_DIR}") {
+          sh '''
+            set -e
+            echo "Checking docker..."
+            docker --version || (echo "Docker CLI not found on node"; exit 2)
+
+            # run node:18 container to build; mount workspace so build artifacts appear on host
+            echo "Running npm build inside node:18 container (this requires Docker CLI)..."
+            cd $PWD
+            docker run --rm -v "$PWD":/app -w /app node:18 sh -c "npm ci --no-audit --no-fund && npm run build -- --configuration=production"
+            
+            echo "Build finished, listing dist folder:"
+            ls -la dist || true
+          '''
         }
-        failure {
-            echo 'Pipeline failed!'
-        }
+      }
     }
+
+    stage('Build Docker Image') {
+      steps {
+        dir("${APP_DIR}") {
+          sh """
+            set -e
+            docker build -t ${DOCKER_IMAGE}:${env.BUILD_NUMBER} -t ${DOCKER_IMAGE}:latest .
+          """
+        }
+      }
+    }
+
+    stage('Docker Login & Push') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDENTIALS, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+          sh '''
+            set -e
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+            docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
+            docker push ${DOCKER_IMAGE}:latest
+            docker logout
+          '''
+        }
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+        sh """
+          set -e
+          docker rm -f ${CONTAINER_NAME} || true
+          docker run -d --name ${CONTAINER_NAME} -p 3025:80 ${DOCKER_IMAGE}:latest
+          docker ps --filter "name=${CONTAINER_NAME}" --format "table {{.ID}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"
+        """
+      }
+    }
+
+  } // stages
+
+  post {
+    success { echo "Frontend pipeline finished successfully." }
+    failure { echo "Frontend pipeline failed — check console log." }
+  }
 }
