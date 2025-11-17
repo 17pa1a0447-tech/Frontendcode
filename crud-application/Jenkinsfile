@@ -20,14 +20,15 @@ pipeline {
             }
         }
         stage('Build Angular App') {
+            agent { docker { image 'node:18' args '-u root:root' } }   // runs stage inside node:18 container
             steps {
-                echo 'Building Angular application...'
                 dir('crud-application') {
-                    sh 'npm ci'
-                    sh 'npm run build -- --configuration=production'
+                sh 'npm ci'
+                sh 'npm run build -- --configuration=production'
                 }
             }
         }
+
         stage('Build Docker Image') {
             steps {
                 echo 'Building Docker image...'
